@@ -41,8 +41,8 @@ jobs:
           echo "DISTCC_HOSTS=$DISTCC_HOSTS" >> $GITHUB_ENV
           
           # Calculate total parallel jobs
-          # 4 boards × 4 cores = 16 base, add 50% for optimal pipeline
-          TOTAL_JOBS=24
+          # 2 visionfive 2 boards x 4 cores + 3 visionfive 1 boards x 2 = 16
+          TOTAL_JOBS=14
           echo "TOTAL_JOBS=$TOTAL_JOBS" >> $GITHUB_ENV
           
           # Optional: Enable distcc logging for first-time debugging
