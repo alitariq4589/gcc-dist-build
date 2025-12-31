@@ -146,6 +146,8 @@ jobs:
           
           # Build with all available cores across cluster
           echo "Starting distributed build with -j$TOTAL_JOBS"
+          export CC="ccache distcc gcc"
+          export CXX="ccache distcc g++"
           time make -j$TOTAL_JOBS
           
           # Show build statistics
