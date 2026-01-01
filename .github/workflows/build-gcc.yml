@@ -111,8 +111,6 @@ jobs:
           
           # CRITICAL: Configure with distcc as the compiler
           # Don't use ccache, just distcc directly
-          CC="distcc gcc" \
-          CXX="distcc g++" \
           ../configure \
             --prefix=$GITHUB_WORKSPACE/installed_binaries \
             --disable-werror \
@@ -139,9 +137,9 @@ jobs:
           fi
           
           # Build with distributed compilation
-          # The CC/CXX from configure will be used automatically
+          # Use distcc during make, not configure
           echo "Starting distributed build with -j$TOTAL_JOBS"
-          time make -j$TOTAL_JOBS
+          time make -j$TOTAL_JOBS CC="distcc gcc" CXX="distcc g++"
           
           # Show distcc log summary
           echo "=== distcc log summary ==="
