@@ -116,12 +116,12 @@ jobs:
             --disable-werror \
             --disable-multilib \
             --enable-languages=c,c++ \
-            --disable-bootstrap
+            # --disable-bootstrap
 
       - name: Build GCC with distributed compilation
         run: |
           cd gcc/build
-          
+
           # Start monitoring in background
           if command -v distccmon-text &> /dev/null; then
             (
@@ -135,12 +135,12 @@ jobs:
             MONITOR_PID=$!
             trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
           fi
-          
+
           # Build with distributed compilation
           # Use distcc during make, not configure
           echo "Starting distributed build with -j$TOTAL_JOBS"
           time make -j$TOTAL_JOBS CC="distcc gcc" CXX="distcc g++"
-          
+
           # Show distcc log summary
           echo "=== distcc log summary ==="
           if [ -f /tmp/distcc.log ]; then
@@ -153,7 +153,7 @@ jobs:
             echo "Last 20 log lines:"
             tail -20 /tmp/distcc.log
           fi
-          
+
           # Kill monitor if running
           kill $MONITOR_PID 2>/dev/null || true
 
