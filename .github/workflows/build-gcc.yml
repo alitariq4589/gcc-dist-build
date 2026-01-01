@@ -24,8 +24,7 @@ jobs:
            libatomic1 \
            flex \
            bison \
-           distcc \
-           ccache
+           distcc
 
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -36,28 +35,28 @@ jobs:
       - name: Setup distributed compilation
         run: |
           # Configure distcc cluster
-          # Add your worker board IPs here
           export DISTCC_HOSTS="${{ secrets.DISTCC_HOSTS }}"
           echo "DISTCC_HOSTS=$DISTCC_HOSTS" >> $GITHUB_ENV
           
           # Calculate total parallel jobs
-          # 2 visionfive 2 boards x 4 cores + 3 visionfive 1 boards x 2 = 16
-          TOTAL_JOBS=14
+          # Format: 2 visionfive2 (4 cores each) + 3 visionfive1 (2 cores each) = 14 cores
+          # Use 1.5x multiplier for optimal throughput
+          TOTAL_JOBS=20
           echo "TOTAL_JOBS=$TOTAL_JOBS" >> $GITHUB_ENV
           
-          # Optional: Enable distcc logging for first-time debugging
-          # export DISTCC_VERBOSE=1
-          # export DISTCC_LOG=/tmp/distcc.log
-          # echo "DISTCC_VERBOSE=1" >> $GITHUB_ENV
-          # echo "DISTCC_LOG=/tmp/distcc.log" >> $GITHUB_ENV
+          # Enable distcc logging for debugging
+          export DISTCC_VERBOSE=1
+          export DISTCC_LOG=/tmp/distcc.log
+          echo "DISTCC_VERBOSE=1" >> $GITHUB_ENV
+          echo "DISTCC_LOG=/tmp/distcc.log" >> $GITHUB_ENV
           
           # Test connectivity
           echo "Testing distcc connectivity..."
-           for host in $(echo "$DISTCC_HOSTS" | tr ' ' '\n' | cut -d/ -f1 | grep -v localhost); do
+          for host in $(echo "$DISTCC_HOSTS" | tr ' ' '\n' | cut -d/ -f1 | grep -v localhost); do
             if timeout 5 bash -c "</dev/tcp/$host/3632" 2>/dev/null; then
-              echo "✓ host is reachable"
+              echo "✓ $host is reachable"
             else
-              echo "⚠ Warning: host is not reachable"
+              echo "⚠ Warning: $host is not reachable"
             fi
           done
       
@@ -69,7 +68,6 @@ jobs:
           g++ --version
           ldd --version
           distcc --version
-          ccache --version
           echo "DISTCC_HOSTS=$DISTCC_HOSTS"
           echo "Total parallel jobs: $TOTAL_JOBS"
 
@@ -111,31 +109,27 @@ jobs:
           mkdir build
           cd build
           
-          # Configure GCC with distributed compilation support
-          # CC and CXX will use ccache wrapper which calls distcc
-          CC="ccache gcc" \
-          CXX="ccache g++" \
+          # CRITICAL: Configure with distcc as the compiler
+          # Don't use ccache, just distcc directly
+          CC="distcc gcc" \
+          CXX="distcc g++" \
           ../configure \
             --prefix=$GITHUB_WORKSPACE/installed_binaries \
             --disable-werror \
             --disable-multilib \
             --enable-languages=c,c++ \
             --disable-bootstrap
-          
-          # Note: --disable-bootstrap builds GCC in one stage instead of three
-          # This is faster and works well with distcc
-          # Remove this flag if you need a fully bootstrapped compiler
 
       - name: Build GCC with distributed compilation
         run: |
           cd gcc/build
           
-          # Start monitoring in background (optional)
+          # Start monitoring in background
           if command -v distccmon-text &> /dev/null; then
             (
               while true; do
                 echo "=== Compilation status at $(date '+%H:%M:%S') ==="
-                distccmon-text | head -15
+                distccmon-text | head -20
                 echo ""
                 sleep 30
               done
@@ -144,16 +138,23 @@ jobs:
             trap "kill $MONITOR_PID 2>/dev/null || true" EXIT
           fi
           
-          # Build with all available cores across cluster
+          # Build with distributed compilation
+          # The CC/CXX from configure will be used automatically
           echo "Starting distributed build with -j$TOTAL_JOBS"
-          export CC="ccache distcc gcc"
-          export CXX="ccache distcc g++"
           time make -j$TOTAL_JOBS
           
-          # Show build statistics
-          echo "=== Build complete ==="
-          echo "=== ccache statistics ==="
-          ccache -s
+          # Show distcc log summary
+          echo "=== distcc log summary ==="
+          if [ -f /tmp/distcc.log ]; then
+            echo "Total compilations:"
+            grep -c "compile" /tmp/distcc.log || echo "0"
+            echo ""
+            echo "Remote compilations:"
+            grep -c "remote" /tmp/distcc.log || echo "0"
+            echo ""
+            echo "Last 20 log lines:"
+            tail -20 /tmp/distcc.log
+          fi
           
           # Kill monitor if running
           kill $MONITOR_PID 2>/dev/null || true
@@ -168,6 +169,48 @@ jobs:
           cd $GITHUB_WORKSPACE/installed_binaries
           ./bin/gcc --version
           ./bin/g++ --version
+
+      - name: Get GCC version and set outputs
+        id: get-version
+        run: |
+          GCC_VERSION=$($GITHUB_WORKSPACE/installed_binaries/bin/gcc -dumpfullversion -dumpversion)
+          ASSET_NAME="gcc-${GCC_VERSION}-riscv64-linux.tar.gz"
+          ASSET_PATH="$GITHUB_WORKSPACE/${ASSET_NAME}"
+
+          echo "release_name=GCC ${GCC_VERSION} RISC-V" >> $GITHUB_OUTPUT
+          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
+          echo "asset_path=$ASSET_PATH" >> $GITHUB_OUTPUT
+
+      - name: Package binaries
+        run: |
+          tar -czf ${{ steps.get-version.outputs.asset_path }} -C ${{ github.workspace }}/installed_binaries .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.get-version.outputs.asset_name }}
+          path: ${{ steps.get-version.outputs.asset_path }}
+
+      - name: Create or push to tag
+        run: |
+          TAG=${{ steps.get-latest-tag.outputs.tag_name }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "✅ Tag $TAG already exists. Skipping tag creation." 
+          else
+            echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-latest-tag.outputs.tag_name }}
+          files: ${{ steps.get-version.outputs.asset_path }}
 
     #   - name: Get GCC version and set outputs
     #     id: get-version
